@@ -1,0 +1,6 @@
+{
+  "name": "EasyToken",
+  "description": "A secure software token manager for legacy RSA SecurID style emulations and modern multi-factor MFA authentication (TOTP/HOTP) tokens.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Beautiful bold security shield with central key vector pattern -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,22 L28,32 L28,54 C28,71.5 39,84.5 54,88 C69,84.5 80,71.5 80,54 L80,32 L54,22 Z M54,42 C57.8,42 61,45.2 61,49 C61,51.8 59.3,54.2 57,55.3 L57,64 L51,64 L51,55.3 C48.7,54.2 47,51.8 47,49 C47,45.2 50.2,42 54,42 Z" />
+</vector>
