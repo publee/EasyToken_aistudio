@@ -14,5 +14,9 @@ data class TokenEntity(
     val interval: Int = 30, // 30 or 60 seconds
     val pin: String? = null, // Optional PIN
     val counter: Long = 0L, // Used mainly for HOTP
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    val expDate: String? = null, // Expiration date display, e.g., "2030-12-31" or "Never"
+    val usesPin: Boolean? = null, // PIN required
+    val version: String? = null // Token version, e.g., "1", "2", "3"
 )
+

@@ -69,6 +69,13 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Update token details (e.g. PIN or Name)
+    fun updateToken(token: TokenEntity) {
+        viewModelScope.launch {
+            repository.update(token)
+        }
+    }
+
     // Increment counter for HOTP tokens
     fun incrementCounter(token: TokenEntity) {
         viewModelScope.launch {
@@ -84,12 +91,376 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
 
     // Import from standard otpauth:// strings
     fun importFromOtpauthUri(uriString: String): Boolean {
-        val token = parseOtpauthUri(uriString)
+        var token = parseOtpauthUri(uriString)
+        if (token == null) {
+            token = parseCtfUri(uriString)
+        }
         return if (token != null) {
             insertToken(token)
             true
         } else {
             false
+        }
+    }
+
+    // Parse plain otpauth scheme or compressed token format
+    fun parseCtfUri(uriString: String): TokenEntity? {
+        try {
+            val cleanUri = uriString.trim()
+            val ctfDataDecoded = if (cleanUri.contains("ctfData=", ignoreCase = true)) {
+                val ctfDataRegex = "[?&]ctfData=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val match = ctfDataRegex.find(cleanUri) ?: return null
+                try {
+                    java.net.URLDecoder.decode(match.groupValues[1], "UTF-8")
+                } catch (e: Exception) {
+                    match.groupValues[1]
+                }
+            } else if ((cleanUri.startsWith("A") || cleanUri.startsWith("B") || cleanUri.startsWith("AwAA") || cleanUri.startsWith("AwAB")) && cleanUri.length >= 20 && !cleanUri.contains("://")) {
+                cleanUri
+            } else {
+                return null
+            }
+
+            val cleanCtfDigits = ctfDataDecoded.replace("[^0-9]".toRegex(), "")
+            val isV2Numeric = cleanCtfDigits.length >= 80 && (cleanCtfDigits.startsWith("1") || cleanCtfDigits.startsWith("2"))
+
+            if (isV2Numeric) {
+                val version = cleanCtfDigits[0] - '0'
+                val serialRaw = cleanCtfDigits.substring(1, 13)
+                val binencDigits = cleanCtfDigits.substring(13, 13 + 63)
+                
+                val d = TokenCalculator.numinputToBits(binencDigits, 189)
+                val encSeed = d.copyOfRange(0, 16)
+                val decSeed = TokenCalculator.decryptV2Seed(encSeed)
+                
+                var formattedSerial = serialRaw
+                if (formattedSerial.length == 12) {
+                    formattedSerial = "${formattedSerial.substring(0, 4)}-${formattedSerial.substring(4, 8)}-${formattedSerial.substring(8, 12)}"
+                }
+                
+                val secretHex = TokenCalculator.byteArrayToHexString(decSeed)
+                
+                val nameRegex = "[?&]name=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val nameMatch = nameRegex.find(cleanUri)
+                val tokenName = if (nameMatch != null) {
+                    try {
+                        java.net.URLDecoder.decode(nameMatch.groupValues[1], "UTF-8")
+                    } catch (e: Exception) {
+                        nameMatch.groupValues[1]
+                    }
+                } else {
+                    "SecurID ($formattedSerial)"
+                }
+                
+                val digitsRegex = "[?&]digits=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val digitsMatch = digitsRegex.find(cleanUri)
+                val digits = digitsMatch?.groupValues?.get(1)?.toIntOrNull() ?: 8
+                
+                val intervalRegex = "[?&](interval|period)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val intervalMatch = intervalRegex.find(cleanUri)
+                val interval = intervalMatch?.groupValues?.get(2)?.toIntOrNull() ?: 60
+                
+                val pinRegex = "[?&](pin|password|activation)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val pinMatch = pinRegex.find(cleanUri)
+                val tokenPin = pinMatch?.groupValues?.get(2)?.let {
+                    try {
+                        java.net.URLDecoder.decode(it, "UTF-8")
+                    } catch (e: Exception) {
+                        it
+                    }
+                }
+                
+                val expDateRegex = "[?&](exp_date|expiration|exp)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val expDateMatch = expDateRegex.find(cleanUri)
+                val expDate = expDateMatch?.groupValues?.get(2)?.let {
+                    try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
+                }
+
+                val usesPinRegex = "[?&](uses_pin|pin_required|pin)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val usesPinMatch = usesPinRegex.find(cleanUri)
+                val usesPin = usesPinMatch?.groupValues?.get(2)?.let {
+                    val decoded = try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
+                    decoded.toBoolean() || decoded == "1" || decoded.equals("yes", ignoreCase = true) || decoded.equals("true", ignoreCase = true)
+                }
+
+                return TokenEntity(
+                    name = tokenName,
+                    secret = secretHex,
+                    type = "SECURID",
+                    serial = formattedSerial,
+                    digits = digits,
+                    interval = interval,
+                    pin = tokenPin,
+                    expDate = expDate,
+                    usesPin = usesPin,
+                    version = "2"
+                )
+            }
+
+            var b64 = ctfDataDecoded.trim()
+            while (b64.endsWith("=") && b64.length % 4 != 0) {
+                b64 = b64.substring(0, b64.length - 1)
+            }
+
+            val bytes = try {
+                android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+            } catch (e: Exception) {
+                return null
+            }
+
+            if (bytes.isEmpty()) return null
+
+            // Detect and handle stoken v3/v4 token (291 bytes)
+            if (bytes.size == 291 && (bytes[0] == 3.toByte() || bytes[0] == 4.toByte())) {
+                val version = bytes[0].toInt() and 0xFF
+                val passwordLocked = bytes[1].toInt() != 0
+                val devidLocked = bytes[2].toInt() != 0
+                
+                var serial = ""
+                var secretHex = ""
+                var digits = 8
+                var interval = 60
+                var expDate: String? = null
+                var usesPin: Boolean? = null
+                
+                if (!passwordLocked && !devidLocked) {
+                    val nonce = bytes.copyOfRange(67, 83)
+                    val encPayload = bytes.copyOfRange(83, 259)
+                    
+                    try {
+                        val derivedKey = v3DeriveKey(null, null, nonce, 1, version)
+                        val decryptedPayload = aes256CbcDecrypt(derivedKey, nonce, encPayload)
+                        
+                        if (decryptedPayload.size == 176) {
+                            val serialRaw = String(decryptedPayload, 0, 16, Charsets.UTF_8).trim { it <= ' ' || it.code == 0 }
+                            serial = serialRaw
+                            
+                            val decSeed = decryptedPayload.copyOfRange(16, 32)
+                            secretHex = decSeed.joinToString("") { String.format("%02X", it) }
+                            
+                            digits = decryptedPayload[35].toInt() and 0xFF
+                            val addpin = decryptedPayload[36].toInt() and 0xFF
+                            usesPin = (addpin != 0x1F)
+                            
+                            interval = decryptedPayload[37].toInt() and 0xFF
+                            if (interval != 30 && interval != 60) {
+                                interval = 60
+                            }
+                            
+                            val expBytes = decryptedPayload.copyOfRange(48, 53)
+                            val longdate = ((expBytes[0].toLong() and 0xFF) shl 32) or
+                                           ((expBytes[1].toLong() and 0xFF) shl 24) or
+                                           ((expBytes[2].toLong() and 0xFF) shl 16) or
+                                           ((expBytes[3].toLong() and 0xFF) shl 8) or
+                                           (expBytes[4].toLong() and 0xFF)
+                            val longdateDays = longdate / 337500
+                            val expDateDays = (longdateDays - 10957).toInt()
+                            val securidMaxDate = (0x7fffffff - 946684800) / 86400 - 1
+                            val finalExpDate = if (expDateDays <= securidMaxDate) expDateDays else securidMaxDate
+                            val expUnixTime = 946684800L + (finalExpDate + 1) * 86400L
+                            
+                            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            sdf.timeZone = java.util.TimeZone.getTimeZone("GMT")
+                            expDate = sdf.format(java.util.Date(expUnixTime * 1000L))
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+                
+                if (serial.isEmpty()) {
+                    val serialParamRegex = "[?&](serial|s|id)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                    val serialParamMatch = serialParamRegex.find(cleanUri)
+                    if (serialParamMatch != null) {
+                        serial = try {
+                            java.net.URLDecoder.decode(serialParamMatch.groupValues[2], "UTF-8")
+                        } catch (e: Exception) {
+                            serialParamMatch.groupValues[2]
+                        }
+                    }
+                }
+                
+                if (serial.isNotEmpty()) {
+                    if (serial.length == 9) {
+                        serial = "${serial.substring(0, 3)}-${serial.substring(3, 6)}-${serial.substring(6, 9)}"
+                    } else if (serial.length == 12) {
+                        serial = "${serial.substring(0, 4)}-${serial.substring(4, 8)}-${serial.substring(8, 12)}"
+                    } else if (serial.length == 16) {
+                        serial = "${serial.substring(0, 4)}-${serial.substring(4, 8)}-${serial.substring(8, 12)}-${serial.substring(12, 16)}"
+                    }
+                }
+                
+                val nameRegex = "[?&]name=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val nameMatch = nameRegex.find(cleanUri)
+                val tokenName = if (nameMatch != null) {
+                    try {
+                        java.net.URLDecoder.decode(nameMatch.groupValues[1], "UTF-8")
+                    } catch (e: Exception) {
+                        nameMatch.groupValues[1]
+                    }
+                } else {
+                    "SecurID ($serial)"
+                }
+                
+                return TokenEntity(
+                    name = tokenName,
+                    secret = secretHex,
+                    type = "SECURID",
+                    serial = serial,
+                    digits = digits,
+                    interval = interval,
+                    pin = null,
+                    expDate = expDate,
+                    usesPin = usesPin,
+                    version = version.toString()
+                )
+            }
+
+            var serial = ""
+            val serialParamRegex = "[?&](serial|s|id)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val serialParamMatch = serialParamRegex.find(cleanUri)
+            if (serialParamMatch != null) {
+                serial = try {
+                    java.net.URLDecoder.decode(serialParamMatch.groupValues[2], "UTF-8")
+                } catch (e: Exception) {
+                    serialParamMatch.groupValues[2]
+                }
+            }
+
+            if (serial.isEmpty()) {
+                val currentDigits = java.lang.StringBuilder()
+                for (b in bytes) {
+                    if (b in '0'.toByte()..'9'.toByte()) {
+                        currentDigits.append(b.toChar())
+                    } else {
+                        if (currentDigits.length in 9..16) {
+                            serial = currentDigits.toString()
+                            break
+                        }
+                        currentDigits.setLength(0)
+                    }
+                }
+                if (serial.isEmpty() && currentDigits.length in 9..16) {
+                    serial = currentDigits.toString()
+                }
+            }
+
+            // Fallback: Swapped nibbles BCD
+            if (serial.isEmpty()) {
+                val currentDigits = java.lang.StringBuilder()
+                for (b in bytes) {
+                    val bInt = b.toInt() and 0xFF
+                    val swapped = ((bInt and 0x0F) shl 4) or ((bInt and 0xF0) ushr 4)
+                    if (swapped in '0'.code..'9'.code) {
+                        currentDigits.append(swapped.toChar())
+                    } else {
+                        if (currentDigits.length in 9..16) {
+                            serial = currentDigits.toString()
+                            break
+                        }
+                        currentDigits.setLength(0)
+                    }
+                }
+                if (serial.isEmpty() && currentDigits.length in 9..16) {
+                    serial = currentDigits.toString()
+                }
+            }
+
+            if (serial.isNotEmpty()) {
+                if (serial.length == 9) {
+                    serial = "${serial.substring(0, 3)}-${serial.substring(3, 6)}-${serial.substring(6, 9)}"
+                } else if (serial.length == 12) {
+                    serial = "${serial.substring(0, 4)}-${serial.substring(4, 8)}-${serial.substring(8, 12)}"
+                } else if (serial.length == 16) {
+                    serial = "${serial.substring(0, 4)}-${serial.substring(4, 8)}-${serial.substring(8, 12)}-${serial.substring(12, 16)}"
+                }
+            }
+
+            val headerOffset = if (bytes.size >= 3 && bytes[0] == 0x03.toByte() && bytes[1] == 0x00.toByte() && bytes[2] == 0x01.toByte()) 3 else 0
+            val seedBytes = if (bytes.size - headerOffset >= 16) {
+                bytes.copyOfRange(headerOffset, headerOffset + 16)
+            } else {
+                val pad = ByteArray(16)
+                System.arraycopy(bytes, headerOffset, pad, 0, bytes.size - headerOffset)
+                pad
+            }
+
+            val decryptedSeed = if (headerOffset == 3) {
+                try {
+                    TokenCalculator.decryptV2Seed(seedBytes)
+                } catch (e: Exception) {
+                    seedBytes
+                }
+            } else {
+                seedBytes
+            }
+
+            val secretHex = decryptedSeed.joinToString("") { String.format("%02X", it) }
+
+            val nameRegex = "[?&]name=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val nameMatch = nameRegex.find(cleanUri)
+            val tokenName = if (nameMatch != null) {
+                try {
+                    java.net.URLDecoder.decode(nameMatch.groupValues[1], "UTF-8")
+                } catch (e: Exception) {
+                    nameMatch.groupValues[1]
+                }
+            } else {
+                "SecurID ($serial)"
+            }
+
+            val digitsRegex = "[?&]digits=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val digitsMatch = digitsRegex.find(cleanUri)
+            val digits = digitsMatch?.groupValues?.get(1)?.toIntOrNull() ?: 8
+
+            val intervalRegex = "[?&](interval|period)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val intervalMatch = intervalRegex.find(cleanUri)
+            val interval = intervalMatch?.groupValues?.get(2)?.toIntOrNull() ?: 60
+
+            val pinRegex = "[?&](pin|password|activation)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val pinMatch = pinRegex.find(cleanUri)
+            val tokenPin = pinMatch?.groupValues?.get(2)?.let {
+                try {
+                    java.net.URLDecoder.decode(it, "UTF-8")
+                } catch (e: Exception) {
+                    it
+                }
+            }
+
+            val expDateRegex = "[?&](exp_date|expiration|exp)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val expDateMatch = expDateRegex.find(cleanUri)
+            val expDate = expDateMatch?.groupValues?.get(2)?.let {
+                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
+            }
+
+            val usesPinRegex = "[?&](uses_pin|pin_required|pin)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val usesPinMatch = usesPinRegex.find(cleanUri)
+            val usesPin = usesPinMatch?.groupValues?.get(2)?.let {
+                val decoded = try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
+                decoded.toBoolean() || decoded == "1" || decoded.equals("yes", ignoreCase = true) || decoded.equals("true", ignoreCase = true)
+            }
+
+            val versionRegex = "[?&](version|v)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+            val versionMatch = versionRegex.find(cleanUri)
+            val versionParsed = versionMatch?.groupValues?.get(2)?.let {
+                try { java.net.URLDecoder.decode(it, "UTF-8") } catch (e: Exception) { it }
+            } ?: if (headerOffset == 3) "3" else null
+
+            return TokenEntity(
+                name = tokenName,
+                secret = secretHex,
+                type = "SECURID",
+                serial = serial,
+                digits = digits,
+                interval = interval,
+                pin = tokenPin,
+                expDate = expDate,
+                usesPin = usesPin,
+                version = versionParsed
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
         }
     }
 
@@ -102,6 +473,23 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             false
         }
+    }
+
+    private fun formatDate(millis: Long): String {
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        return sdf.format(java.util.Date(millis))
+    }
+
+    fun parseOtpauthUriPublic(uriString: String): TokenEntity? {
+        var token = parseOtpauthUri(uriString)
+        if (token == null) {
+            token = parseCtfUri(uriString)
+        }
+        return token
+    }
+
+    fun parseSdtidXmlPublic(xmlContent: String): TokenEntity? {
+        return parseSdtidXml(xmlContent)
     }
 
     // Parse plain otpauth scheme
@@ -146,7 +534,10 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 type = type,
                 digits = digits,
                 interval = interval,
-                serial = "OTP-" + secret.take(6).uppercase()
+                serial = "",
+                expDate = null,
+                usesPin = null,
+                version = null
             )
         } catch (e: Exception) {
             return null
@@ -188,13 +579,32 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 g.getOrNull(1)?.ifEmpty { null } ?: g.getOrNull(2)
             }?.trim() ?: "SecurID Key"
 
+            val deathDateRegex = "<DeathDate>([^<]+)</DeathDate>|<ExpirationDate>([^<]+)</ExpirationDate>".toRegex(RegexOption.IGNORE_CASE)
+            val expDateMatch = deathDateRegex.find(xml)
+            val expDate = expDateMatch?.groupValues?.let { g ->
+                g.getOrNull(1)?.ifEmpty { null } ?: g.getOrNull(2)
+            }?.trim()
+
+            val versionRegex = "<Version>([^<]+)</Version>".toRegex(RegexOption.IGNORE_CASE)
+            val versionMatch = versionRegex.find(xml)
+            val version = versionMatch?.groupValues?.get(1)?.trim()
+
+            val usesPin = if (xml.contains("<PinRequired>", ignoreCase = true) || xml.contains("<PinType>", ignoreCase = true)) {
+                !(xml.contains("<PinRequired>false</PinRequired>", ignoreCase = true) || xml.contains("<PinType>0</PinType>", ignoreCase = true))
+            } else {
+                null
+            }
+
             return TokenEntity(
                 name = name,
                 secret = seed,
                 type = "SECURID",
-                serial = if (serial.isNotEmpty()) serial else "987-112-901",
+                serial = serial,
                 digits = digits,
-                interval = interval
+                interval = interval,
+                expDate = expDate,
+                usesPin = usesPin,
+                version = version
             )
         } catch (e: Exception) {
             e.printStackTrace()
@@ -211,7 +621,8 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 timeSeconds = timeSeconds,
                 digits = token.digits,
                 interval = token.interval,
-                pin = token.pin
+                pin = token.pin,
+                serial = token.serial
             )
             "HOTP" -> TokenCalculator.calculateHOTP(
                 secret = token.secret,
@@ -225,5 +636,90 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 interval = token.interval
             )
         }
+    }
+
+    private fun v3DeriveKey(pass: String?, devid: String?, salt: ByteArray, keyId: Int, version: Int): ByteArray {
+        val passBytes = pass?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+        val passLen = passBytes.size
+        val bufLen = 48 + 16 + 16 + passLen
+        val buf0 = ByteArray(bufLen)
+        
+        if (passBytes.isNotEmpty()) {
+            System.arraycopy(passBytes, 0, buf0, 0, passBytes.size)
+        }
+        
+        val devidBytes = ByteArray(48)
+        if (devid != null) {
+            val scrubbed = devid.filter { it.isLetterOrDigit() }.uppercase()
+            val scrubbedBytes = scrubbed.toByteArray(Charsets.UTF_8)
+            System.arraycopy(scrubbedBytes, 0, devidBytes, 0, minOf(scrubbedBytes.size, 48))
+        }
+        System.arraycopy(devidBytes, 0, buf0, passLen, 48)
+        
+        val key0 = byteArrayOf(
+            0xd0.toByte(), 0x14.toByte(), 0x43.toByte(), 0x3c.toByte(), 0x6d.toByte(), 0x17.toByte(), 0x9f.toByte(), 0xeb.toByte(),
+            0xda.toByte(), 0x09.toByte(), 0xab.toByte(), 0xfc.toByte(), 0x32.toByte(), 0x49.toByte(), 0x63.toByte(), 0x4c.toByte()
+        )
+        val key1 = byteArrayOf(
+            0x3b.toByte(), 0xaf.toByte(), 0xff.toByte(), 0x4d.toByte(), 0x91.toByte(), 0x8d.toByte(), 0x89.toByte(), 0xb6.toByte(),
+            0x81.toByte(), 0x60.toByte(), 0xde.toByte(), 0x44.toByte(), 0x4e.toByte(), 0x05.toByte(), 0xc0.toByte(), 0xdd.toByte()
+        )
+        System.arraycopy(if (keyId != 0) key1 else key0, 0, buf0, passLen + 48, 16)
+        System.arraycopy(salt, 0, buf0, passLen + 48 + 16, 16)
+        
+        var finalBuf = buf0
+        var finalBufLen = bufLen
+        if (version == 3) {
+            val buf1 = ByteArray(bufLen shr 1)
+            for (i in 1 until bufLen step 2) {
+                buf1[i shr 1] = buf0[i]
+            }
+            finalBuf = buf1
+            finalBufLen = bufLen shr 1
+        }
+        
+        return pbkdf2Sha256(finalBuf, salt, 1000, 32)
+    }
+
+    private fun pbkdf2Sha256(password: ByteArray, salt: ByteArray, iterations: Int, keyLengthBytes: Int): ByteArray {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        val keySpec = javax.crypto.spec.SecretKeySpec(password, "HmacSHA256")
+        mac.init(keySpec)
+        
+        val out = ByteArray(keyLengthBytes)
+        val hLen = 32
+        val l = (keyLengthBytes + hLen - 1) / hLen
+        
+        for (i in 1..l) {
+            val sI = ByteArray(salt.size + 4)
+            System.arraycopy(salt, 0, sI, 0, salt.size)
+            sI[salt.size] = (i ushr 24).toByte()
+            sI[salt.size + 1] = (i ushr 16).toByte()
+            sI[salt.size + 2] = (i ushr 8).toByte()
+            sI[salt.size + 3] = i.toByte()
+            
+            var u = mac.doFinal(sI)
+            val t = u.clone()
+            
+            for (j in 2..iterations) {
+                u = mac.doFinal(u)
+                for (k in t.indices) {
+                    t[k] = (t[k].toInt() xor u[k].toInt()).toByte()
+                }
+            }
+            
+            val offset = (i - 1) * hLen
+            val len = minOf(hLen, keyLengthBytes - offset)
+            System.arraycopy(t, 0, out, offset, len)
+        }
+        return out
+    }
+
+    private fun aes256CbcDecrypt(key: ByteArray, iv: ByteArray, ciphertext: ByteArray): ByteArray {
+        val cipher = javax.crypto.Cipher.getInstance("AES/CBC/NoPadding")
+        val keySpec = javax.crypto.spec.SecretKeySpec(key, "AES")
+        val ivSpec = javax.crypto.spec.IvParameterSpec(iv)
+        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec, ivSpec)
+        return cipher.doFinal(ciphertext)
     }
 }
