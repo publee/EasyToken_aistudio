@@ -91,7 +91,13 @@ fun EasyTokenHomeScreen(
     var showBottomSheet by remember { mutableStateOf(false) }
     var tokenToDelete by remember { mutableStateOf<TokenEntity?>(null) }
     var tokenToEditPin by remember { mutableStateOf<TokenEntity?>(null) }
+    var tokenToRename by remember { mutableStateOf<TokenEntity?>(null) }
     var scannedTokenToConfirm by remember { mutableStateOf<TokenEntity?>(null) }
+    var customTokenName by remember { mutableStateOf("") }
+
+    LaunchedEffect(scannedTokenToConfirm) {
+        customTokenName = scannedTokenToConfirm?.name ?: ""
+    }
 
     val prefs = remember { context.getSharedPreferences("app_settings", Context.MODE_PRIVATE) }
     var isFingerprintEnabled by remember { mutableStateOf(prefs.getBoolean("fingerprint_enabled", false)) }
@@ -215,7 +221,7 @@ fun EasyTokenHomeScreen(
 
     // Interactive dialog to set/edit token PIN
     if (tokenToEditPin != null) {
-        var pinValue by remember { mutableStateOf(tokenToEditPin?.pin ?: "") }
+        var pinValue by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { tokenToEditPin = null },
             title = { Text("Set/Edit Token PIN") },
@@ -228,6 +234,7 @@ fun EasyTokenHomeScreen(
                         label = { Text("PIN") },
                         placeholder = { Text("e.g. 1234") },
                         singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth().testTag("edit_pin_field")
                     )
                 }
@@ -254,6 +261,54 @@ fun EasyTokenHomeScreen(
         )
     }
 
+    // Interactive dialog to rename token
+    if (tokenToRename != null) {
+        val token = tokenToRename!!
+        var renameValue by remember(token) { mutableStateOf(token.name) }
+        AlertDialog(
+            onDismissRequest = { tokenToRename = null },
+            title = { Text("Rename Token") },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Enter a new custom name for this soft-token:",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = renameValue,
+                        onValueChange = { renameValue = it },
+                        label = { Text("Token Name") },
+                        modifier = Modifier.fillMaxWidth().testTag("rename_token_input"),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val updatedToken = token.copy(name = renameValue.trim().ifEmpty { token.name })
+                        viewModel.updateToken(updatedToken)
+                        tokenToRename = null
+                        Toast.makeText(context, "Token renamed successfully", Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = renameValue.trim().isNotEmpty(),
+                    modifier = Modifier.testTag("rename_token_confirm_button")
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { tokenToRename = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -261,8 +316,10 @@ fun EasyTokenHomeScreen(
         bottomBar = {
             NavigationBar(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                tonalElevation = 0.dp,
-                modifier = Modifier.height(80.dp)
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
             ) {
                 NavigationBarItem(
                     selected = currentTab == 0,
@@ -334,35 +391,16 @@ fun EasyTokenHomeScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(64.dp)
-                    .padding(horizontal = 8.dp),
+                    .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.Start
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    IconButton(onClick = { Toast.makeText(context, "Interactive menu is encrypted under user profile.", Toast.LENGTH_SHORT).show() }) {
-                        Icon(Icons.Rounded.Menu, contentDescription = "Menu", tint = MaterialTheme.colorScheme.onBackground)
-                    }
-                    Text(
-                        text = "EasyToken",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    IconButton(onClick = { Toast.makeText(context, "Search mode active.", Toast.LENGTH_SHORT).show() }) {
-                        Icon(Icons.Rounded.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.onBackground)
-                    }
-                    IconButton(onClick = { Toast.makeText(context, "Full offline security active.", Toast.LENGTH_SHORT).show() }) {
-                        Icon(Icons.Rounded.MoreVert, contentDescription = "More Options", tint = MaterialTheme.colorScheme.onBackground)
-                    }
-                }
+                Text(
+                    text = "EasyToken",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
             }
 
             // Central grid/flex elements of the theme
@@ -451,7 +489,8 @@ fun EasyTokenHomeScreen(
                                 clipboardManager.setText(AnnotatedString(passcode))
                                 Toast.makeText(context, "Passcode copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
-                            onEditPinClick = { tokenToEditPin = it }
+                            onEditPinClick = { tokenToEditPin = it },
+                            onRenameClick = { tokenToRename = it }
                         )
                     }
 
@@ -476,22 +515,13 @@ fun EasyTokenHomeScreen(
                                     .fillMaxWidth()
                                     .padding(horizontal = 4.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.Start
                             ) {
                                 Text(
                                     text = "Other Tokens",
                                     fontWeight = FontWeight.Medium,
                                     fontSize = 15.sp,
                                     color = MaterialTheme.colorScheme.onBackground
-                                )
-                                Text(
-                                    text = "Manage",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.clickable {
-                                        Toast.makeText(context, "Swipe list or tap keys to manage selection.", Toast.LENGTH_SHORT).show()
-                                    }
                                 )
                             }
 
@@ -595,9 +625,17 @@ fun EasyTokenHomeScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "A soft-token has been successfully parsed and decrypted. Verify the security profile:",
+                            text = "A soft-token has been successfully parsed and decrypted. Verify or customize the title and security profile:",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        OutlinedTextField(
+                            value = customTokenName,
+                            onValueChange = { customTokenName = it },
+                            label = { Text("Token Title / Label") },
+                            modifier = Modifier.fillMaxWidth().testTag("confirm_custom_name"),
+                            singleLine = true
                         )
                         
                         Card(
@@ -612,7 +650,7 @@ fun EasyTokenHomeScreen(
                                 modifier = Modifier.padding(14.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                DetailRow(label = "Token Name", value = token.name)
+                                DetailRow(label = "Parsed Name", value = token.name)
                                 DetailRow(label = "MFA Type", value = token.type)
                                 DetailRow(label = "Serial Number", value = if (token.serial.isNotEmpty()) token.serial else "", isMonospace = true)
                                 DetailRow(label = "Expiration Date", value = token.expDate ?: "")
@@ -630,10 +668,12 @@ fun EasyTokenHomeScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            viewModel.insertToken(token)
+                            val finalToken = token.copy(name = customTokenName.trim().ifEmpty { token.name })
+                            viewModel.insertToken(finalToken)
                             scannedTokenToConfirm = null
                             Toast.makeText(context, "MFA token successfully registered!", Toast.LENGTH_SHORT).show()
                         },
+                        enabled = customTokenName.trim().isNotEmpty(),
                         modifier = Modifier.testTag("confirm_import_button")
                     ) {
                         Text("Confirm & Save")
@@ -655,7 +695,8 @@ fun ActiveTokenCard(
     systemTime: Long,
     viewModel: TokenViewModel,
     onCopyClick: (String) -> Unit,
-    onEditPinClick: (TokenEntity) -> Unit
+    onEditPinClick: (TokenEntity) -> Unit,
+    onRenameClick: (TokenEntity) -> Unit
 ) {
     val passcode = viewModel.getPasscodeForToken(token, systemTime)
 
@@ -703,16 +744,33 @@ fun ActiveTokenCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Top
             ) {
-                Column {
-                    Text(
-                        text = token.name,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        letterSpacing = 1.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = token.name,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            letterSpacing = 1.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        IconButton(
+                            onClick = { onRenameClick(token) },
+                            modifier = Modifier.size(24.dp).testTag("rename_token_icon_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Edit,
+                                contentDescription = "Rename Token",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = if (token.serial.isNotEmpty()) "ID: ${token.serial}" else "MFA Soft-Token",
@@ -873,7 +931,7 @@ fun ActiveTokenCard(
 
             if (token.type == "SECURID") {
                 Spacer(modifier = Modifier.height(12.dp))
-                val pinLabel = if (token.pin.isNullOrEmpty()) "No PIN configured (Set PIN)" else "PIN: ${token.pin} (Change PIN)"
+                val pinLabel = if (token.pin.isNullOrEmpty()) "No PIN configured (Set PIN)" else "PIN Configured (Change PIN)"
                 AssistChip(
                     onClick = { onEditPinClick(token) },
                     label = { Text(pinLabel) },
@@ -1132,11 +1190,7 @@ fun QrScannerForm(onUrlScanned: (String) -> Unit) {
                     Text("Grant Camera Permission", fontSize = 13.sp)
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
                 Spacer(modifier = Modifier.height(16.dp))
-
-                ScannerSimulatorSection(onUrlScanned = onUrlScanned)
             }
         }
     }
@@ -1254,95 +1308,6 @@ fun CameraPreviewAndScan(onUrlScanned: (String) -> Unit) {
             fontWeight = FontWeight.Bold,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
         )
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-    ScannerSimulatorSection(onUrlScanned = onUrlScanned)
-}
-
-@Composable
-fun ScannerSimulatorSection(onUrlScanned: (String) -> Unit) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.DeveloperMode,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = "Web Emulator Scan Simulator",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            Text(
-                text = "Since browser-streaming containers lack physical camera inputs, tap a simulator trigger below to securely emulate scanning a QR token:",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-            )
-
-            Column(
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Button(
-                    onClick = { onUrlScanned("otpauth://totp/Google:john.doe@gmail.com?secret=JBSWY3DPEHPK3PXP&issuer=Google") },
-                    modifier = Modifier.fillMaxWidth().height(36.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                ) {
-                    Icon(Icons.Rounded.QrCode, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Trigger TOTP Google 6-digit key", fontSize = 11.sp)
-                }
-
-                Button(
-                    onClick = { onUrlScanned("otpauth://totp/CorporateSec:VPNSecure?secret=O7X7X7X7X7X7X7X7&digits=8&period=60&issuer=RSAEmulation") },
-                    modifier = Modifier.fillMaxWidth().height(36.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                ) {
-                    Icon(Icons.Rounded.QrCode, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Trigger TOTP Enterprise 8-digit key", fontSize = 11.sp)
-                }
-
-                Button(
-                    onClick = { onUrlScanned("http://127.0.0.1/securid/ctf?ctfData=AwAB9Rk%2B2lAJ4xNTY3ODkwMTIzNDU2Nzg5MA%3D%3D&name=Imported%20RSA%20VPN") },
-                    modifier = Modifier.fillMaxWidth().height(36.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
-                ) {
-                    Icon(Icons.Rounded.VpnKey, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Trigger SecurID CTF (AwAB9Rk+2lA...)", fontSize = 11.sp)
-                }
-            }
-        }
     }
 }
 
@@ -1472,6 +1437,7 @@ fun ManualEntryForm(onTokenCreated: (TokenEntity) -> Unit) {
                         .testTag("entry_pin"),
                     placeholder = { Text("1234") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     singleLine = true
                 )
             }

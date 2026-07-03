@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:id="@+id/header_layout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_alignParentTop="true">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_token_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="EasyToken"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:ellipsize="end"
+                android:singleLine="true"/>
+
+            <TextView
+                android:id="@+id/widget_token_serial"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="No token selected"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp"/>
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/widget_refresh_button"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_refresh_white"
+            android:contentDescription="Refresh Code"
+            android:padding="4dp"
+            android:scaleType="fitCenter"/>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:layout_centerInParent="true"
+        android:layout_below="@id/header_layout">
+
+        <TextView
+            android:id="@+id/widget_token_code"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="------"
+            android:textColor="#42A5F5"
+            android:textSize="26sp"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:letterSpacing="0.1"/>
+
+        <TextView
+            android:id="@+id/widget_token_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Tap refresh to update"
+            android:textColor="#90A4AE"
+            android:textSize="10sp"
+            android:gravity="center"
+            android:layout_marginTop="2dp"/>
+    </LinearLayout>
+
+</RelativeLayout>

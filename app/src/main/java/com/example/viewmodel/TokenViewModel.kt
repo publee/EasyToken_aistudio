@@ -15,6 +15,7 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: TokenRepository
     val allTokens: StateFlow<List<TokenEntity>>
+    private val sharedPrefs = application.getSharedPreferences("app_settings", android.content.Context.MODE_PRIVATE)
 
     // ID of the actively selected token shown in the jumbo preview card
     private val _selectedTokenId = MutableStateFlow<Int?>(null)
@@ -38,11 +39,23 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 initialValue = emptyList()
             )
 
+        // Retrieve selected token ID from SharedPreferences if available
+        val savedId = sharedPrefs.getInt("selected_token_id", -1)
+        if (savedId != -1) {
+            _selectedTokenId.value = savedId
+        }
+
         // Automatically select the first token if available
         viewModelScope.launch {
             allTokens.collect { list ->
-                if (_selectedTokenId.value == null && list.isNotEmpty()) {
-                    _selectedTokenId.value = list.first().id
+                if (list.isNotEmpty()) {
+                    val currentId = _selectedTokenId.value
+                    if (currentId == null || !list.any { it.id == currentId }) {
+                        val targetId = if (list.any { it.id == savedId }) savedId else list.first().id
+                        _selectedTokenId.value = targetId
+                        sharedPrefs.edit().putInt("selected_token_id", targetId).apply()
+                        updateWidget()
+                    }
                 }
             }
         }
@@ -50,22 +63,41 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectToken(id: Int) {
         _selectedTokenId.value = id
+        sharedPrefs.edit().putInt("selected_token_id", id).apply()
+        updateWidget()
+    }
+
+    private fun updateWidget() {
+        val intent = android.content.Intent("com.example.UPDATE_WIDGET").apply {
+            setPackage(getApplication<Application>().packageName)
+        }
+        getApplication<Application>().sendBroadcast(intent)
     }
 
     // Helper to insert a parsed or manually created token
     fun insertToken(token: TokenEntity) {
         viewModelScope.launch {
             repository.insert(token)
+            updateWidget()
         }
     }
 
     // Deletes selected token and resets focus to remaining
     fun deleteToken(token: TokenEntity) {
         viewModelScope.launch {
-            if (_selectedTokenId.value == token.id) {
-                _selectedTokenId.value = allTokens.value.firstOrNull { it.id != token.id }?.id
+            val targetId = if (_selectedTokenId.value == token.id) {
+                allTokens.value.firstOrNull { it.id != token.id }?.id
+            } else {
+                _selectedTokenId.value
+            }
+            _selectedTokenId.value = targetId
+            if (targetId != null) {
+                sharedPrefs.edit().putInt("selected_token_id", targetId).apply()
+            } else {
+                sharedPrefs.edit().remove("selected_token_id").apply()
             }
             repository.delete(token)
+            updateWidget()
         }
     }
 
@@ -73,6 +105,7 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
     fun updateToken(token: TokenEntity) {
         viewModelScope.launch {
             repository.update(token)
+            updateWidget()
         }
     }
 
