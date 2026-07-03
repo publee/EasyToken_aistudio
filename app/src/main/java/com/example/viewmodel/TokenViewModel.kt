@@ -248,20 +248,16 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                             }
                             
                             val expBytes = decryptedPayload.copyOfRange(48, 53)
-                            val longdate = ((expBytes[0].toLong() and 0xFF) shl 32) or
+                            val ticks = ((expBytes[0].toLong() and 0xFF) shl 32) or
                                            ((expBytes[1].toLong() and 0xFF) shl 24) or
                                            ((expBytes[2].toLong() and 0xFF) shl 16) or
                                            ((expBytes[3].toLong() and 0xFF) shl 8) or
                                            (expBytes[4].toLong() and 0xFF)
-                            val longdateDays = longdate / 337500
-                            val expDateDays = (longdateDays - 10957).toInt()
-                            val securidMaxDate = (0x7fffffff - 946684800) / 86400 - 1
-                            val finalExpDate = if (expDateDays <= securidMaxDate) expDateDays else securidMaxDate
-                            val expUnixTime = 946684800L + (finalExpDate + 1) * 86400L
+                            val expSeconds = Math.round(ticks * 0.256)
                             
                             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
                             sdf.timeZone = java.util.TimeZone.getTimeZone("GMT")
-                            expDate = sdf.format(java.util.Date(expUnixTime * 1000L))
+                            expDate = sdf.format(java.util.Date(expSeconds * 1000L))
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -269,7 +265,7 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
                 if (serial.isEmpty()) {
-                    val serialParamRegex = "[?&](serial|s|id)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                    val serialParamRegex = "[?&](serial|s|id|serial_number)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
                     val serialParamMatch = serialParamRegex.find(cleanUri)
                     if (serialParamMatch != null) {
                         serial = try {
@@ -278,6 +274,54 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                             serialParamMatch.groupValues[2]
                         }
                     }
+                }
+                
+                if (expDate == null) {
+                    val expDateRegex = "[?&](exp_date|expiration|exp|expiration_date|expires)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                    val expDateMatch = expDateRegex.find(cleanUri)
+                    if (expDateMatch != null) {
+                        expDate = try {
+                            java.net.URLDecoder.decode(expDateMatch.groupValues[2], "UTF-8")
+                        } catch (e: Exception) {
+                            expDateMatch.groupValues[2]
+                        }
+                    }
+                }
+                
+                if (usesPin == null) {
+                    val usesPinRegex = "[?&](uses_pin|pin_required|pin)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                    val usesPinMatch = usesPinRegex.find(cleanUri)
+                    if (usesPinMatch != null) {
+                        val decoded = try {
+                            java.net.URLDecoder.decode(usesPinMatch.groupValues[2], "UTF-8")
+                        } catch (e: Exception) {
+                            usesPinMatch.groupValues[2]
+                        }
+                        usesPin = decoded.toBoolean() || decoded == "1" || decoded.equals("yes", ignoreCase = true) || decoded.equals("true", ignoreCase = true)
+                    }
+                }
+
+                var tokenPin: String? = null
+                val pinRegex = "[?&](pin|password|activation)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val pinMatch = pinRegex.find(cleanUri)
+                if (pinMatch != null) {
+                    tokenPin = try {
+                        java.net.URLDecoder.decode(pinMatch.groupValues[2], "UTF-8")
+                    } catch (e: Exception) {
+                        pinMatch.groupValues[2]
+                    }
+                }
+
+                val digitsRegex = "[?&]digits=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val digitsMatch = digitsRegex.find(cleanUri)
+                if (digitsMatch != null) {
+                    digits = digitsMatch.groupValues[1].toIntOrNull() ?: digits
+                }
+
+                val intervalRegex = "[?&](interval|period)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val intervalMatch = intervalRegex.find(cleanUri)
+                if (intervalMatch != null) {
+                    interval = intervalMatch.groupValues[2].toIntOrNull() ?: interval
                 }
                 
                 if (serial.isNotEmpty()) {
@@ -309,7 +353,7 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                     serial = serial,
                     digits = digits,
                     interval = interval,
-                    pin = null,
+                    pin = tokenPin,
                     expDate = expDate,
                     usesPin = usesPin,
                     version = version.toString()
