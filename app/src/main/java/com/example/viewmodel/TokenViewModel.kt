@@ -223,12 +223,83 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
                 var expDate: String? = null
                 var usesPin: Boolean? = null
                 
-                if (!passwordLocked && !devidLocked) {
-                    val nonce = bytes.copyOfRange(67, 83)
-                    val encPayload = bytes.copyOfRange(83, 259)
-                    
+                val nonceDevidHash = bytes.copyOfRange(3, 35)
+                val nonceDevidPassHash = bytes.copyOfRange(35, 67)
+                val nonce = bytes.copyOfRange(67, 83)
+                val encPayload = bytes.copyOfRange(83, 259)
+
+                // 1. Gather deviceId candidates
+                val candidateDeviceIds = mutableListOf<String>()
+                val uriDevidRegex = "[?&](deviceid|devid)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val uriDevidMatch = uriDevidRegex.find(cleanUri)
+                if (uriDevidMatch != null) {
                     try {
-                        val derivedKey = v3DeriveKey(null, null, nonce, 1, version)
+                        candidateDeviceIds.add(java.net.URLDecoder.decode(uriDevidMatch.groupValues[2], "UTF-8"))
+                    } catch (e: Exception) {
+                        candidateDeviceIds.add(uriDevidMatch.groupValues[2])
+                    }
+                }
+                // Add common rsa device IDs
+                candidateDeviceIds.add("A01C4380FC014DF0B1137FB98EC74694") // Android standard Soft Token Device ID
+                candidateDeviceIds.add("556F198533DD442C91553A0E994F21B1") // iOS/iPhone
+                candidateDeviceIds.add("") // None / empty
+                candidateDeviceIds.add("868C28F831BF49119876EBECE5C3F2AB") // BlackBerry
+                candidateDeviceIds.add("B77A1D06D505420090D31BB397748704") // BlackBerry 10
+                candidateDeviceIds.add("C483B59263F04F19B4CBA6BCE8E57159") // Windows Phone
+                candidateDeviceIds.add("8F94B226D3624204AC523B21FA333B6F") // Windows
+                candidateDeviceIds.add("D0955A53569B4ECC9CF76C2A59D4E775") // macOS
+
+                // 2. Gather password candidates
+                val candidatePasswords = mutableListOf<String>()
+                val uriPassRegex = "[?&](password|pass|pin|activation)=([^&]+)".toRegex(RegexOption.IGNORE_CASE)
+                val uriPassMatch = uriPassRegex.find(cleanUri)
+                if (uriPassMatch != null) {
+                    try {
+                        candidatePasswords.add(java.net.URLDecoder.decode(uriPassMatch.groupValues[2], "UTF-8"))
+                    } catch (e: Exception) {
+                        candidatePasswords.add(uriPassMatch.groupValues[2])
+                    }
+                }
+                candidatePasswords.add("") // Empty/none
+
+                // 3. Find matching deviceId and password
+                var matchingDeviceId: String? = null
+                var matchingPassword = ""
+
+                // Verify devid match via nonceDevidHash (which always uses empty password in computeHash)
+                for (devId in candidateDeviceIds) {
+                    val computed = computeV3Hash("", devId, nonce)
+                    if (computed.contentEquals(nonceDevidHash)) {
+                        matchingDeviceId = devId
+                        break
+                    }
+                }
+
+                // If no device ID matched the hash, but devid is NOT locked, we can use empty string
+                if (matchingDeviceId == null && !devidLocked) {
+                    matchingDeviceId = ""
+                }
+
+                if (matchingDeviceId != null) {
+                    // Verify password match via nonceDevidPassHash
+                    for (pass in candidatePasswords) {
+                        val computed = computeV3Hash(pass, matchingDeviceId, nonce)
+                        if (computed.contentEquals(nonceDevidPassHash)) {
+                            matchingPassword = pass
+                            break
+                        }
+                    }
+                }
+
+                if (matchingDeviceId != null) {
+                    try {
+                        val derivedKey = v3DeriveKey(
+                            if (matchingPassword.isEmpty()) null else matchingPassword,
+                            if (matchingDeviceId.isEmpty()) null else matchingDeviceId,
+                            nonce,
+                            1,
+                            version
+                        )
                         val decryptedPayload = aes256CbcDecrypt(derivedKey, nonce, encPayload)
                         
                         if (decryptedPayload.size == 176) {
@@ -765,5 +836,21 @@ class TokenViewModel(application: Application) : AndroidViewModel(application) {
         val ivSpec = javax.crypto.spec.IvParameterSpec(iv)
         cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec, ivSpec)
         return cipher.doFinal(ciphertext)
+    }
+
+    private fun computeV3Hash(password: String, deviceId: String, salt: ByteArray): ByteArray {
+        val buf = ByteArray(salt.size + 48 + password.length)
+        System.arraycopy(salt, 0, buf, 0, salt.size)
+        if (deviceId.isNotEmpty()) {
+            val scrubbed = deviceId.filter { it.isLetterOrDigit() }.uppercase()
+            val devIdBytes = scrubbed.toByteArray(Charsets.UTF_8)
+            System.arraycopy(devIdBytes, 0, buf, salt.size, minOf(devIdBytes.size, 48))
+        }
+        if (password.isNotEmpty()) {
+            val passBytes = password.toByteArray(Charsets.UTF_8)
+            System.arraycopy(passBytes, 0, buf, salt.size + 48, minOf(passBytes.size, password.length))
+        }
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        return md.digest(buf)
     }
 }
